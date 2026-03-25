@@ -1864,7 +1864,7 @@ async def assign_issue(
 
 
 @jira_mcp.tool(
-    tags={"jira", "write", "toolset:jira_issues"},
+    tags={"jira", "write", "delete", "toolset:jira_issues"},
     annotations={"title": "Delete Issue", "destructiveHint": True},
 )
 @check_write_access

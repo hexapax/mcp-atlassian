@@ -21,6 +21,12 @@ class TestMainTransportSelection:
     @pytest.fixture
     def mock_asyncio_run(self):
         """Mock asyncio.run to capture what coroutine is executed."""
+        captured_coros: list = []
+
+        def _capture_and_close(coro):
+            captured_coros.append(coro)
+            mock_run._called_with = coro
+
         with patch("asyncio.run") as mock_run:
             captured_coros = []
 

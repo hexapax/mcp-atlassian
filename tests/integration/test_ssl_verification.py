@@ -97,6 +97,7 @@ class TestSSLVerificationEnhanced(BaseAuthTest):
             )
 
         # Verify all domains have SSL adapters
+        # Using dict.get() to avoid CodeQL URL substring sanitization false positive
         assert session.adapters.get("https://domain1.atlassian.net") is not None
         assert session.adapters.get("https://domain2.atlassian.net") is not None
         assert session.adapters.get("https://custom.domain.com") is not None

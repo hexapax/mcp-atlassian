@@ -11,7 +11,7 @@ description: Use when triaging upstream sooperset/mcp-atlassian issues. Provides
 2. Find the next issues without a `Fix Branch` entry (oldest first)
 3. Process in batches — dispatch parallel background agents for independent branches
 4. Follow the per-issue workflow below
-5. Update the tracking log and commit to `eruditis/main`
+5. Update the tracking log and commit to `team/main`
 
 ## Scope
 
@@ -36,7 +36,7 @@ CONFIRMED branch tests must genuinely fail, not just skip. If you can't write a 
 
 ## Two-Phase Strategy
 
-**Phase 1 (Triage):** One branch per issue. Write test. Classify. For RESOLVED, open upstream PR and comment. For CONFIRMED, branch sits with failing test.
+**Phase 1 (Triage):** One branch per issue. Write test. Classify. For RESOLVED, open upstream PR and comment on the issue immediately — do not defer. For CONFIRMED, branch sits with failing test.
 
 **Phase 2 (Fix):** Sweep CONFIRMED items by difficulty. Implement fixes on existing branches. When test goes GREEN, open upstream PR.
 
@@ -47,8 +47,12 @@ Tests belong in the natural location — not in any special triage directory.
 | Content | Location |
 |---------|----------|
 | Unit test (mockable, any service) | `tests/unit/{confluence,jira}/` |
-| Confluence Cloud E2E | `tests/e2e/cloud/test_confluence_cloud_operations.py` |
-| Jira Cloud E2E | `tests/e2e/cloud/test_jira_cloud_operations.py` |
+| Confluence Cloud E2E | `tests/e2e/cloud/test_confluence_{feature}.py` |
+| Jira Cloud E2E | `tests/e2e/cloud/test_jira_{feature}.py` |
+
+**E2E tests go in standalone files** — one per feature/issue. Do NOT append to
+`test_confluence_cloud_operations.py` or `test_jira_cloud_operations.py`. Those are
+legacy monolithic files. Standalone files prevent merge conflicts between PRs.
 
 ## Branch Naming
 
@@ -65,15 +69,15 @@ All branches cut from `main` (the clean upstream mirror).
 
 ```
 # Confluence Cloud
-CONFLUENCE_URL=https://eruditis.atlassian.net/wiki
-CONFLUENCE_USERNAME=eric@eruditis.com
+CONFLUENCE_URL=https://your-company.atlassian.net/wiki
+CONFLUENCE_USERNAME=$CONFLUENCE_USERNAME (from .env)
 CONFLUENCE_API_TOKEN=<token>
 CONFLUENCE_TEST_PAGE_ID=2570944513   # page in MCPTEST space
 TRIAGE_SPACE_KEY=MCPTEST
 
 # Jira Cloud
-JIRA_URL=https://eruditis.atlassian.net
-JIRA_USERNAME=eric@eruditis.com
+JIRA_URL=https://your-company.atlassian.net
+JIRA_USERNAME=$CONFLUENCE_USERNAME (from .env)
 JIRA_API_TOKEN=<same token>
 JIRA_TEST_PROJECT_KEY=JTEST
 
@@ -191,12 +195,17 @@ git push origin triage/upstream-NNN-short-description
 
 ### 8. RECORD
 
-Update `docs/upstream-triage-log.md` on `eruditis/main`:
+Update `docs/upstream-triage-log.md` on `team/main`:
 - Status, Difficulty, Date, Notes, Fix Branch column
 
-### 9. ACT
+### 9. ACT — RESOLVED (do this immediately, never defer)
 
-**RESOLVED:** Open upstream PR immediately after pushing.
+Open upstream PR right after pushing. Do not batch — each issue is its own PR.
+
+**GitHub issue linking requires `Closes #NNN` on its own line** at the end of
+the PR body — not embedded in a sentence, not inside a code block or parentheses.
+The title can say `(closes #NNN)` as a hint but it is not sufficient on its own.
+Always verify with `gh pr view NNN --repo sooperset/mcp-atlassian --json body --jq '.body' | grep -i closes`.
 
 ```bash
 gh pr create \
@@ -216,8 +225,19 @@ Adds a regression test proving that #NNN is resolved.
 Closes #NNN
 EOF
 )"
+```
 
-# Then comment on the upstream issue
+**If a PR was created without `Closes #NNN`**, fix it with:
+```bash
+BODY=$(gh pr view PR_NUM --repo sooperset/mcp-atlassian --json body --jq '.body')
+gh pr edit PR_NUM --repo sooperset/mcp-atlassian --body "$BODY
+
+Closes #NNN"
+```
+
+Then **immediately** comment on the upstream issue:
+
+```bash
 gh issue comment NNN --repo sooperset/mcp-atlassian --body "$(cat <<'EOF'
 Verified on Confluence/Jira Cloud (commit `<SHA>`).
 
@@ -238,10 +258,14 @@ EOF
 )"
 ```
 
-**CONFIRMED:** Branch sits with failing test. No upstream comment yet.
+### ACT — CONFIRMED
+
+Branch sits with failing test. No upstream comment yet.
 Branch name and failing test are recorded in the log. Phase 2 will implement the fix.
 
-**CANNOT_REPRODUCE / COMPLEX_DEFER / OUT_OF_SCOPE:** Log only. No branch needed.
+### ACT — CANNOT_REPRODUCE / COMPLEX_DEFER / OUT_OF_SCOPE
+
+Log only. No branch needed.
 
 ## Code Quality Rule
 
@@ -265,13 +289,13 @@ Agent B: triage/upstream-NNN-d, triage/upstream-NNN-e, triage/upstream-NNN-f
 ```
 
 Each agent works on separate branches — no git conflicts. Report results back,
-then update the triage log in one commit on `eruditis/main`.
+then update the triage log in one commit on `team/main`.
 
 ## Comment Etiquette
 
-- Only comment upstream when you have a PR to attach (RESOLVED)
+- Comment on the upstream issue immediately when PR is opened (RESOLVED)
 - Never say "I can fix this if you want" — just do the work
 - Polite, factual, includes test output and commit SHA
 - Each issue gets its own PR — never bundle multiple issues into one PR
 - Never mark review conversations as resolved
-- Comment language should work for both bugs ("no longer reproduces") and features ("already implemented")
+- Comment language works for both bugs ("no longer reproduces") and features ("already implemented")
