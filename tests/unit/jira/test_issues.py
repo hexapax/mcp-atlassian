@@ -31,8 +31,24 @@ class TestIssuesMixin:
         # to jira.create_issue / jira.update_issue so existing mocks work.
         setup_api3_passthrough_mocks(mixin)
 
-        # Default empty comments result for get_issue_comments
-        # (called by _get_issue_comments_if_needed)
+        # Default empty comments result for _fetch_comments_page
+        # (called by _get_issue_comments_if_needed). Items are raw Jira
+        # API comment dicts so that the JiraIssue/JiraComment/JiraUser
+        # model layer can parse author objects properly.
+        mixin._fetch_comments_page = MagicMock(
+            return_value={
+                "items": [],
+                "total": 0,
+                "returned": 0,
+                "offset": 0,
+                "has_more": False,
+                "order": "oldest",
+            }
+        )
+
+        # Keep the public get_issue_comments mock around for tests that
+        # assert on the standalone tool surface; the issues path no
+        # longer calls it after the author-preservation fix.
         mixin.get_issue_comments = MagicMock(
             return_value={
                 "items": [],
@@ -91,13 +107,15 @@ class TestIssuesMixin:
         )
 
         issues_mixin.jira.get_issue.return_value = issue_data
-        # Mock get_issue_comments (called by _get_issue_comments_if_needed)
-        issues_mixin.get_issue_comments.return_value = {
+        # Mock _fetch_comments_page (called by _get_issue_comments_if_needed).
+        # Returns raw Jira API comment dicts so that JiraComment/JiraUser
+        # parsing can populate the structured author info.
+        issues_mixin._fetch_comments_page.return_value = {
             "items": [
                 {
                     "id": "1",
                     "body": "This is a comment",
-                    "author": "John Doe",
+                    "author": {"displayName": "John Doe"},
                     "created": "2023-01-02T00:00:00.000+0000",
                     "updated": "2023-01-02T00:00:00.000+0000",
                 }
@@ -122,14 +140,19 @@ class TestIssuesMixin:
             properties=None,
             update_history=True,
         )
-        issues_mixin.get_issue_comments.assert_called_once_with(
+        issues_mixin._fetch_comments_page.assert_called_once_with(
             "TEST-123", limit=10, offset=0, order="oldest"
         )
 
-        # Verify the comments were added to the issue
+        # Verify the comments were added to the issue with full author info
         assert hasattr(issue, "comments")
         assert len(issue.comments) == 1
         assert issue.comments[0].body == "This is a comment"
+        # Regression guard: author must round-trip from raw API dict
+        # through the model — otherwise display_name falls back to
+        # the UNASSIGNED placeholder.
+        assert issue.comments[0].author is not None
+        assert issue.comments[0].author.display_name == "John Doe"
 
     def test_get_issue_includes_comment_field_when_comment_limit_positive(
         self, issues_mixin: IssuesMixin
@@ -162,13 +185,13 @@ class TestIssuesMixin:
         }
 
         issues_mixin.jira.get_issue.return_value = issue_data
-        # Mock get_issue_comments (called by _get_issue_comments_if_needed)
-        issues_mixin.get_issue_comments.return_value = {
+        # Mock _fetch_comments_page (called by _get_issue_comments_if_needed)
+        issues_mixin._fetch_comments_page.return_value = {
             "items": [
                 {
                     "id": "1",
                     "body": "Auto-fetched comment",
-                    "author": "Jane Doe",
+                    "author": {"displayName": "Jane Doe"},
                     "created": "2023-01-02T00:00:00.000+0000",
                     "updated": "2023-01-02T00:00:00.000+0000",
                 }
@@ -186,12 +209,14 @@ class TestIssuesMixin:
         fields_param = call_args[1]["fields"]
         assert "comment" in fields_param
 
-        issues_mixin.get_issue_comments.assert_called_once_with(
+        issues_mixin._fetch_comments_page.assert_called_once_with(
             "TEST-123", limit=10, offset=0, order="oldest"
         )
         assert hasattr(issue, "comments")
         assert len(issue.comments) == 1
         assert issue.comments[0].body == "Auto-fetched comment"
+        assert issue.comments[0].author is not None
+        assert issue.comments[0].author.display_name == "Jane Doe"
 
     def test_get_issue_excludes_comment_field_when_comment_limit_zero(
         self, issues_mixin: IssuesMixin
@@ -218,7 +243,91 @@ class TestIssuesMixin:
         fields_param = call_args[1]["fields"]
         assert "comment" not in fields_param
 
+        issues_mixin._fetch_comments_page.assert_not_called()
         issues_mixin.get_issue_comments.assert_not_called()
+
+    def test_get_issue_preserves_full_comment_author_through_model(
+        self, issues_mixin: IssuesMixin
+    ):
+        """Regression: comment author must round-trip through the model.
+
+        Earlier versions had ``_get_issue_comments_if_needed`` call
+        ``get_issue_comments`` which flattened ``author`` to a display
+        name string. When the resulting items were handed to
+        :class:`JiraIssue` / :class:`JiraComment`,
+        :meth:`JiraUser.from_api_response` saw a non-dict and silently
+        returned a default user with ``display_name == "Unassigned"``,
+        losing username/email/avatar/account_id entirely.
+
+        This test exercises the real ``_fetch_comments_page`` →
+        ``_get_issue_comments_if_needed`` → ``JiraIssue.from_api_response``
+        path and asserts that the structured author survives.
+        """
+        # Restore a real _fetch_comments_page bound method (the fixture
+        # stubs it with an empty default) and mock only the underlying
+        # transport layer.
+        from mcp_atlassian.jira.comments import CommentsMixin
+
+        issues_mixin._fetch_comments_page = CommentsMixin._fetch_comments_page.__get__(
+            issues_mixin
+        )
+
+        issue_data = {
+            "id": "12345",
+            "key": "TEST-123",
+            "fields": {
+                "comment": {"comments": []},  # placeholder, will be overwritten
+                "summary": "Test Issue",
+                "status": {"name": "Open"},
+                "issuetype": {"name": "Bug"},
+                "created": "2023-01-01T00:00:00.000+0000",
+                "updated": "2023-01-02T00:00:00.000+0000",
+            },
+        }
+        comment_api_response = {
+            "comments": [
+                {
+                    "id": "1001",
+                    "body": "Looks good to me",
+                    "author": {
+                        "displayName": "Alice Reviewer",
+                        "name": "alice",
+                        "emailAddress": "alice@example.com",
+                        "accountId": "557058:abc",
+                        "active": True,
+                    },
+                    "created": "2023-01-02T00:00:00.000+0000",
+                    "updated": "2023-01-02T00:00:00.000+0000",
+                }
+            ],
+            "total": 1,
+            "startAt": 0,
+            "maxResults": 10,
+        }
+
+        issues_mixin.jira.get_issue.return_value = issue_data
+        issues_mixin.jira.get = MagicMock(return_value=comment_api_response)
+
+        issue = issues_mixin.get_issue("TEST-123", comment_limit=10)
+
+        # Ensure the underlying API was called exactly once with
+        # pagination/order params.
+        assert issues_mixin.jira.get.call_count == 1
+        called_url = issues_mixin.jira.get.call_args[0][0]
+        called_params = issues_mixin.jira.get.call_args[1]["params"]
+        assert "/issue/TEST-123/comment" in called_url
+        assert called_params["startAt"] == 0
+        assert called_params["maxResults"] == 10
+
+        # Author info must be fully preserved.
+        assert len(issue.comments) == 1
+        author = issue.comments[0].author
+        assert author is not None
+        assert author.display_name == "Alice Reviewer"
+        # Without the fix these would all be None/UNASSIGNED defaults.
+        assert author.username == "alice"
+        assert author.email == "alice@example.com"
+        assert author.account_id == "557058:abc"
 
     def test_get_issue_with_epic_info(self, issues_mixin: IssuesMixin, make_issue_data):
         """Test retrieving issue with epic information."""
@@ -329,10 +438,18 @@ class TestIssuesMixin:
         total = 8000
         page_size = 100
 
-        def mock_get_issue_comments(issue_key, limit=50, offset=0, order="oldest"):
+        def mock_fetch_comments_page(issue_key, limit=50, offset=0, order="oldest"):
             start = offset
             end = min(start + limit, total)
-            items = [{"id": str(i), "body": f"c{i}"} for i in range(start, end)]
+            # Raw Jira API shape: author is a dict, not a flat string.
+            items = [
+                {
+                    "id": str(i),
+                    "body": f"c{i}",
+                    "author": {"displayName": f"u{i}"},
+                }
+                for i in range(start, end)
+            ]
             return {
                 "items": items,
                 "total": total,
@@ -342,7 +459,9 @@ class TestIssuesMixin:
                 "order": order,
             }
 
-        issues_mixin.get_issue_comments = MagicMock(side_effect=mock_get_issue_comments)
+        issues_mixin._fetch_comments_page = MagicMock(
+            side_effect=mock_fetch_comments_page
+        )
 
         issue = issues_mixin.get_issue(
             "TEST-123",
@@ -353,7 +472,7 @@ class TestIssuesMixin:
         # The result must contain all 8000 comments
         assert len(issue.comments) == total
         # Paging must have happened — no single call with limit >= 8000
-        for call in issues_mixin.get_issue_comments.call_args_list:
+        for call in issues_mixin._fetch_comments_page.call_args_list:
             assert (
                 call.kwargs.get("limit", call.args[1] if len(call.args) > 1 else 100)
                 < total

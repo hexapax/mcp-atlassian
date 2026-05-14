@@ -337,6 +337,14 @@ class IssuesMixin(
     ) -> dict[str, Any]:
         """Get comments for an issue if needed.
 
+        Uses :meth:`_fetch_comments_page` rather than the public
+        :meth:`get_issue_comments` so that ``author`` is returned as the
+        raw Jira API dict. This is required because the items are passed
+        downstream to :class:`JiraIssue` / :class:`JiraComment` /
+        :class:`JiraUser` which all expect raw API shape — flattening
+        ``author`` to a string here would cause the model to fall back to
+        the ``UNASSIGNED`` placeholder.
+
         Args:
             issue_key: The issue key
             comment_limit: Maximum number of comments to include
@@ -344,12 +352,13 @@ class IssuesMixin(
             comment_offset: Number of comments to skip
 
         Returns:
-            Dict with items, total, returned, offset, has_more, order
+            Dict with items (raw Jira comment dicts), total, returned,
+            offset, has_more, order
         """
         if comment_limit is None or comment_limit > 0:
             try:
                 if comment_limit is not None:
-                    return self.get_issue_comments(
+                    return self._fetch_comments_page(
                         issue_key,
                         limit=comment_limit,
                         offset=comment_offset,
@@ -389,13 +398,24 @@ class IssuesMixin(
         """Fetch all comments by paging until exhaustion.
 
         Used when comment_limit="all" to preserve true "all" semantics.
+        Returns raw Jira API comment dicts (see :meth:`_fetch_comments_page`)
+        so downstream model parsing has access to the full ``author``
+        object.
         """
         all_items: list[dict[str, Any]] = []
         page_size = 100
         current_offset = offset
+        page: dict[str, Any] = {
+            "items": [],
+            "total": 0,
+            "returned": 0,
+            "offset": offset,
+            "has_more": False,
+            "order": order,
+        }
 
         while True:
-            page = self.get_issue_comments(
+            page = self._fetch_comments_page(
                 issue_key,
                 limit=page_size,
                 offset=current_offset,

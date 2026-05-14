@@ -63,6 +63,9 @@ class ConcreteIssuesMixin(
     def get_issue_comments(self, issue_key, limit=50, offset=0, order="oldest"):
         pass
 
+    def _fetch_comments_page(self, issue_key, limit=50, offset=0, order="oldest"):
+        pass
+
     def _format_field_value_for_write(self, field_id, value, field_definition):
         pass
 
