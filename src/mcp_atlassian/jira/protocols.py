@@ -269,6 +269,22 @@ class CommentOperationsProto(Protocol):
     ) -> dict[str, Any]:
         """Get comments for a specific issue with pagination and ordering."""
 
+    @abstractmethod
+    def _fetch_comments_page(
+        self,
+        issue_key: str,
+        limit: int = 50,
+        offset: int = 0,
+        order: str = "oldest",
+    ) -> dict[str, Any]:
+        """Fetch a single page of comments preserving raw Jira API format.
+
+        Used by ``_get_issue_comments_if_needed`` so that downstream model
+        parsing (``JiraComment`` / ``JiraUser``) sees the original
+        ``author`` dict and can populate full user details rather than
+        falling back to the ``UNASSIGNED`` placeholder.
+        """
+
 
 @runtime_checkable
 class MetricsOperationsProto(Protocol):

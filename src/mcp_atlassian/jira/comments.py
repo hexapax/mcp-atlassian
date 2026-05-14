@@ -16,7 +16,15 @@ class CommentsMixin(JiraClient):
     """Mixin for Jira comment operations."""
 
     def _process_raw_comment(self, comment: dict[str, Any]) -> dict[str, Any]:
-        """Process a raw Jira comment dict into a clean format."""
+        """Process a raw Jira comment dict into a clean format.
+
+        Note: this collapses ``author`` to its display name string and is
+        intended for the standalone tool surface (where author is rendered
+        flat). The ``get_issue`` model path uses :meth:`_fetch_comments_page`
+        directly so that the raw author dict is preserved for
+        :class:`JiraUser` parsing — see ``_get_issue_comments_if_needed``
+        in ``issues.py``.
+        """
         return {
             "id": comment.get("id"),
             "body": self._clean_text(comment.get("body", "")),
@@ -25,30 +33,37 @@ class CommentsMixin(JiraClient):
             "author": comment.get("author", {}).get("displayName", "Unknown"),
         }
 
-    def get_issue_comments(
+    def _fetch_comments_page(
         self,
         issue_key: str,
         limit: int = 50,
         offset: int = 0,
         order: str = "oldest",
     ) -> dict[str, Any]:
-        """Get comments for a specific issue with pagination and ordering.
+        """Fetch a single page of comments preserving raw Jira API format.
+
+        Returns the same pagination metadata as :meth:`get_issue_comments`
+        but with ``items`` set to the raw Jira comment dicts (unmodified
+        from the API response). Use this when downstream code needs the
+        full ``author`` object (e.g. to instantiate ``JiraUser``) or the
+        original ``body`` payload (ADF/wiki) for the model layer.
 
         Args:
             issue_key: The issue key (e.g. 'PROJ-123')
-            limit: Maximum number of comments to return
+            limit: Maximum number of comments to return per page
             offset: Number of comments to skip (after ordering)
             order: Comment order — "oldest" or "newest"
 
         Returns:
-            Dict with items, total, returned, offset, has_more, order
+            Dict with items (raw Jira comment dicts), total, returned,
+            offset, has_more, order
 
         Raises:
             Exception: If there is an error getting comments
         """
         try:
             if order == "newest" and not self.config.is_cloud:
-                return self._get_comments_newest_server(issue_key, limit, offset)
+                return self._fetch_comments_page_newest_server(issue_key, limit, offset)
 
             # Build query params for the comments endpoint
             params: dict[str, Any] = {
@@ -71,14 +86,11 @@ class CommentsMixin(JiraClient):
 
             raw_comments = response.get("comments", [])
             total = response.get("total", len(raw_comments))
-
-            processed = [self._process_raw_comment(c) for c in raw_comments]
-
-            returned = len(processed)
+            returned = len(raw_comments)
             has_more = (offset + returned) < total
 
             return {
-                "items": processed,
+                "items": raw_comments,
                 "total": total,
                 "returned": returned,
                 "offset": offset,
@@ -89,15 +101,16 @@ class CommentsMixin(JiraClient):
             logger.error(f"Error getting comments for issue {issue_key}: {str(e)}")
             raise Exception(f"Error getting comments: {str(e)}") from e
 
-    def _get_comments_newest_server(
+    def _fetch_comments_page_newest_server(
         self,
         issue_key: str,
         limit: int,
         offset: int,
     ) -> dict[str, Any]:
-        """Get newest comments on Server/DC (no orderBy support).
+        """Server/DC newest-first variant of ``_fetch_comments_page``.
 
-        Server/DC API returns oldest-first only. To get newest-first:
+        Server/DC API returns oldest-first only and does not honor
+        ``orderBy``. To get newest-first we:
         1. Fetch total count with maxResults=0
         2. Compute the correct startAt for the window we want
         3. Fetch that window and reverse
@@ -149,14 +162,12 @@ class CommentsMixin(JiraClient):
                 raise TypeError(msg)
 
             raw_comments = response.get("comments", [])
-            processed = [self._process_raw_comment(c) for c in raw_comments]
-
-            processed.reverse()
-            returned = len(processed)
+            raw_comments.reverse()
+            returned = len(raw_comments)
             has_more = (offset + returned) < total
 
             return {
-                "items": processed,
+                "items": raw_comments,
                 "total": total,
                 "returned": returned,
                 "offset": offset,
@@ -166,6 +177,52 @@ class CommentsMixin(JiraClient):
         except Exception as e:
             logger.error(f"Error getting comments for issue {issue_key}: {str(e)}")
             raise Exception(f"Error getting comments: {str(e)}") from e
+
+    def get_issue_comments(
+        self,
+        issue_key: str,
+        limit: int = 50,
+        offset: int = 0,
+        order: str = "oldest",
+    ) -> dict[str, Any]:
+        """Get comments for a specific issue with pagination and ordering.
+
+        This is the public/standalone surface — each comment is processed
+        through :meth:`_process_raw_comment` so that ``author`` is rendered
+        as a flat display-name string for compact tool output. For code
+        paths that need the raw author dict (e.g. the ``get_issue`` model
+        layer), use :meth:`_fetch_comments_page` instead.
+
+        Args:
+            issue_key: The issue key (e.g. 'PROJ-123')
+            limit: Maximum number of comments to return
+            offset: Number of comments to skip (after ordering)
+            order: Comment order — "oldest" or "newest"
+
+        Returns:
+            Dict with items, total, returned, offset, has_more, order
+
+        Raises:
+            Exception: If there is an error getting comments
+        """
+        page = self._fetch_comments_page(issue_key, limit, offset, order)
+        page["items"] = [self._process_raw_comment(c) for c in page["items"]]
+        return page
+
+    # Backwards-compatible alias for the historical private helper that
+    # paired ``order="newest"`` with Server/DC. Keeping it here lets any
+    # external subclasses / tests that referenced the old name continue
+    # to work; the implementation now flattens authors via
+    # :meth:`_process_raw_comment` for parity with ``get_issue_comments``.
+    def _get_comments_newest_server(
+        self,
+        issue_key: str,
+        limit: int,
+        offset: int,
+    ) -> dict[str, Any]:
+        page = self._fetch_comments_page_newest_server(issue_key, limit, offset)
+        page["items"] = [self._process_raw_comment(c) for c in page["items"]]
+        return page
 
     def add_comment(
         self,

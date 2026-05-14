@@ -90,8 +90,10 @@ class TestFormatConversionIntegration:
             },
         }
 
-        # Mock get_issue_comments (called by _get_issue_comments_if_needed)
-        jira_fetcher_with_real_preprocessor.get_issue_comments = Mock(
+        # Mock _fetch_comments_page (called by _get_issue_comments_if_needed).
+        # Items are raw Jira API dicts so the model layer can parse the
+        # author into a JiraUser.
+        jira_fetcher_with_real_preprocessor._fetch_comments_page = Mock(
             return_value={
                 "items": [
                     {
@@ -99,7 +101,7 @@ class TestFormatConversionIntegration:
                         "body": "h1. Important Update\n\n# First item\n# Second item\n\n*Status:* Done",
                         "created": "2023-01-01T10:00:00.000+0000",
                         "updated": "2023-01-01T10:00:00.000+0000",
-                        "author": "Test User",
+                        "author": {"displayName": "Test User"},
                     }
                 ],
                 "total": 1,
